@@ -901,20 +901,47 @@ ggml_tensor * llama_model_deepseek41::graph::build_attention_v41(
             comp_k->nb[1], comp_k->nb[2], comp_k->nb[3], 0);
     cb(comp_k, "comp_k", il);
 
-    ggml_tensor * k_all = ggml_concat(ctx0, raw_k, comp_k, 2);
-    cb(k_all, "k_all", il);
+    ggml_tensor * raw_mask = inp_attn->get_kq_mask();
+    ggml_tensor * k_all    = nullptr;
+    ggml_tensor * kq_mask  = nullptr;
+    int64_t       n_kv_max = 0;
 
-    ggml_tensor * raw_mask  = inp_attn->get_kq_mask();
-    ggml_tensor * comp_mask = top_k
-        ? build_top_k_mask(inp_comp.kq_mask, top_k, "comp_top_k_mask", il)
-        : inp_comp.kq_mask;
+    if (top_k && nt == 1 && raw_k->ne[3] == 1 && comp_k->ne[1] == 1 && comp_k->ne[3] == 1 &&
+            inp_comp.kq_mask->ne[1] == 1) {
+        // A single query: gather the top-k compressed rows it picked instead of concatenating the
+        // whole compressed cache to the window and masking all but top-k of it. That copied and
+        // scanned every compressed row on every layer for every decode step.
+        const int64_t k_sel = top_k->ne[0];
+        ggml_tensor * ck    = ggml_view_2d(ctx0, comp_k, comp_k->ne[0], n_comp, comp_k->nb[2], 0);
+        ggml_tensor * sel_k = ggml_cast(ctx0, ggml_get_rows(ctx0, ck, top_k), GGML_TYPE_F16);  // [D, k]
+        sel_k = ggml_reshape_4d(ctx0, sel_k, sel_k->ne[0], 1, k_sel, 1);
+        ggml_tensor * rk = raw_k->type == GGML_TYPE_F16 ? raw_k : ggml_cast(ctx0, raw_k, GGML_TYPE_F16);
+        k_all = ggml_concat(ctx0, rk, sel_k, 2);
+        cb(k_all, "k_all_sel", il);
 
-    ggml_tensor * kq_mask = ggml_concat(ctx0, raw_mask, comp_mask, 0);
-    cb(kq_mask, "kq_mask", il);
+        // a pick can be an unreachable row when fewer than top-k are visible; it keeps its -inf
+        ggml_tensor * cm  = ggml_view_2d(ctx0, inp_comp.kq_mask, 1, n_comp, ggml_element_size(inp_comp.kq_mask), 0);
+        ggml_tensor * sel_mask = ggml_reshape_2d(ctx0, ggml_get_rows(ctx0, cm, top_k), k_sel, 1);
+        if (sel_mask->type != raw_mask->type) {
+            sel_mask = ggml_cast(ctx0, sel_mask, raw_mask->type);
+        }
+        kq_mask = ggml_concat(ctx0, raw_mask, sel_mask, 0);
+        cb(kq_mask, "kq_mask_sel", il);
+    } else {
+        k_all = ggml_concat(ctx0, raw_k, comp_k, 2);
+        cb(k_all, "k_all", il);
 
-    const int64_t n_kv_max = top_k
-        ? std::min<int64_t>(raw_mask->ne[0], hparams.n_swa) + top_k->ne[0]
-        : 0;
+        ggml_tensor * comp_mask = top_k
+            ? build_top_k_mask(inp_comp.kq_mask, top_k, "comp_top_k_mask", il)
+            : inp_comp.kq_mask;
+
+        kq_mask = ggml_concat(ctx0, raw_mask, comp_mask, 0);
+        cb(kq_mask, "kq_mask", il);
+
+        n_kv_max = top_k
+            ? std::min<int64_t>(raw_mask->ne[0], hparams.n_swa) + top_k->ne[0]
+            : 0;
+    }
 
     out = build_attn_mha(q, k_all, k_all, nullptr, kq_mask, layer.attn_sinks,
             nullptr, n_kv_max, kq_scale, il);
