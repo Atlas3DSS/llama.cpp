@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -29,9 +30,9 @@
 // it derives index keys from that shared latent rather than from a second compressor. See
 // build_attention_v41().
 //
-// Not implemented: the two level candidate mask. Measured against the reference, it selects every
-// block until the compressed length passes candidate_topk_blocks * candidate_block_size, so it
-// changes nothing below that and the context is capped there instead.
+// The two level candidate mask (build_candidate_mask) selects every block until the compressed
+// length passes candidate_topk_blocks * candidate_block_size (16K positions on the released
+// checkpoint), so it only changes the selection past that.
 
 // mean over the hyper-connection copies; deepseek4.cpp keeps its own copy of this
 static ggml_tensor * dsv41_hc_mean(ggml_context * ctx, ggml_tensor * x) {
@@ -97,6 +98,21 @@ void llama_model_deepseek41::load_arch_hparams(llama_model_loader & ml) {
             throw std::runtime_error("engram prime of zero would divide by zero in the hash");
         }
     }
+
+    // Two-level indexer selection. Conversions so far do not write these keys, so default to the
+    // released checkpoint's config (candidate_source_layer_id 20, 2048 blocks of 8 positions).
+    // The graph applies it only if that layer turns out to be an index source.
+    // LLAMA_DSV41_NO_CANDIDATES=1 turns it off, for comparing against the old behaviour.
+    uint32_t cand_src = 20;
+    cand_topk_blocks  = 2048;
+    cand_block_size   = 8;
+    ml.get_key(std::string("deepseek41.attention.indexer.candidate_layer"),        cand_src,         false);
+    ml.get_key(std::string("deepseek41.attention.indexer.candidate_top_k_blocks"), cand_topk_blocks, false);
+    ml.get_key(std::string("deepseek41.attention.indexer.candidate_block_size"),   cand_block_size,  false);
+    const char * no_cand = getenv("LLAMA_DSV41_NO_CANDIDATES");
+    const bool   off     = (no_cand && atoi(no_cand) != 0) || cand_topk_blocks == 0 || cand_block_size == 0 ||
+                           cand_src >= hparams.n_layer();
+    cand_layer = off ? -1 : (int32_t) cand_src;
 }
 
 void llama_model_deepseek41::load_arch_tensors(llama_model_loader & ml) {
@@ -581,12 +597,86 @@ ggml_tensor * llama_model_deepseek41::graph::build_indexer_top_k(
     score = ggml_add(ctx0, score, mask);
     cb(score, "idx_score", il);
 
+    // Two-level selection (reference select_candidate_blocks): the candidate source keeps the
+    // cand_topk_blocks best blocks of cand_block_size positions for each query, and the index
+    // sources after it pick their top-k only inside those blocks. Below that many blocks every
+    // block is a candidate and this is a no-op, which is what the 16K note at the top refers to.
+    const auto & pmodel = static_cast<const llama_model_deepseek41 &>(model);
+    if (pmodel.cand_layer >= 0 && hparams.dsv41_is_index_source(pmodel.cand_layer)) {
+        const int64_t n_blk = (n_comp + pmodel.cand_block_size - 1)/pmodel.cand_block_size;
+        if (il == pmodel.cand_layer) {
+            cand_mask = n_blk > (int64_t) pmodel.cand_topk_blocks
+                ? build_candidate_mask(pmodel, score, mask, il)
+                : nullptr;
+        } else if (il > pmodel.cand_layer && cand_mask) {
+            GGML_ASSERT(ggml_are_same_shape(cand_mask, score));
+            score = ggml_add(ctx0, score, cand_mask);
+            cb(score, "idx_score_cand", il);
+        }
+    }
+
     const uint32_t n_top_k = score->ne[0] < hparams.indexer_top_k ? score->ne[0] : hparams.indexer_top_k;
 
     ggml_tensor * top_k = ggml_cont(ctx0, ggml_top_k(ctx0, score, n_top_k));
     cb(top_k, "idx_top_k", il);
 
     return top_k;
+}
+
+// Level one of the two-level top-k, as a [n_comp, n_tokens] mask of 0 (candidate) / -inf.
+// score and mask are F32 [n_comp, n_tokens] with unreachable positions already at -inf.
+ggml_tensor * llama_model_deepseek41::graph::build_candidate_mask(
+        const llama_model_deepseek41 & pmodel,
+        ggml_tensor * score,
+        ggml_tensor * mask,
+        int il) const {
+    const int64_t bs     = pmodel.cand_block_size;
+    const int64_t n_comp = score->ne[0];
+    const int64_t nt     = score->ne[1];
+    const int64_t n_blk  = (n_comp + bs - 1)/bs;
+    const int64_t n_pad  = n_blk*bs - n_comp;
+    GGML_ASSERT(score->ne[2] == 1 && score->ne[3] == 1);
+
+    const auto pad = [&](ggml_tensor * x) {
+        if (n_pad == 0) {
+            return x;
+        }
+        ggml_tensor * fill = ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_pad, nt), -INFINITY);
+        return ggml_concat(ctx0, x, fill, 0);
+    };
+    // each block scores as its best position; the pooled mask says which blocks are reachable
+    ggml_tensor * blk = ggml_pool_2d(ctx0, pad(score), GGML_OP_POOL_MAX, bs, 1, bs, 1, 0, 0);  // [n_blk, nt]
+    ggml_tensor * vis = ggml_pool_2d(ctx0, pad(mask),  GGML_OP_POOL_MAX, bs, 1, bs, 1, 0, 0);
+
+    // the block holding the query's newest position is only partly filled, so pin it in: it is the
+    // last reachable block, i.e. reachable while the next one is not (exp maps 0/-inf to 1/0)
+    ggml_tensor * vis_next = n_blk > 1
+        ? ggml_concat(ctx0, ggml_view_2d(ctx0, vis, n_blk - 1, nt, vis->nb[1], vis->nb[0]),
+                      ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, 1, nt), -INFINITY), 0)
+        : ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, 1, nt), -INFINITY);
+    ggml_tensor * e_vis  = ggml_exp(ctx0, vis);
+    ggml_tensor * e_next = ggml_exp(ctx0, vis_next);
+    ggml_tensor * last   = ggml_sub(ctx0, e_vis, ggml_mul(ctx0, e_vis, e_next));
+    blk = ggml_add(ctx0, blk, ggml_scale(ctx0, last, 1e30f));
+    cb(blk, "idx_cand_blk", il);
+
+    const int64_t k = std::min<int64_t>(pmodel.cand_topk_blocks, n_blk);
+    ggml_tensor * top = ggml_cont(ctx0, ggml_top_k(ctx0, blk, k));                               // [k, nt]
+
+    ggml_tensor * keep = ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_blk, nt), -INFINITY);
+    keep = ggml_view_4d(ctx0, keep, 1, n_blk, nt, 1, keep->nb[0], keep->nb[1], keep->nb[2], 0);
+    ggml_tensor * top_3d = ggml_view_4d(ctx0, top, k, nt, 1, 1, top->nb[1], top->nb[2], top->nb[3], 0);
+    ggml_tensor * zeros  = ggml_fill(ctx0, ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1, k, nt, 1), 0.0f);
+    keep = ggml_set_rows(ctx0, keep, zeros, top_3d);                                              // [1, n_blk, nt]
+
+    // widen the block mask back to positions and drop the padding
+    keep = ggml_repeat(ctx0, keep, ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, bs, n_blk, nt));
+    keep = ggml_reshape_2d(ctx0, keep, bs*n_blk, nt);
+    if (n_pad > 0) {
+        keep = ggml_cont(ctx0, ggml_view_2d(ctx0, keep, n_comp, nt, keep->nb[1], 0));
+    }
+    cb(keep, "idx_cand_mask", il);
+    return keep;
 }
 
 // DeepSeek-V4.1 attention: a sliding window of raw KV, plus, where the layer uses one, the

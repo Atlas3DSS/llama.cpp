@@ -1391,6 +1391,12 @@ struct llama_model_deepseek41 : public llama_model_deepseek4 {
     // The shared stream layer roles live in hparams as dsv41_kv_source and friends, because the
     // KV cache needs them to alias a reader's storage onto its source's. See load_arch_tensors.
 
+    // two-level indexer selection (reference candidate_source_layer_id / candidate_topk_blocks /
+    // candidate_block_size); cand_layer < 0 turns it off
+    int32_t  cand_layer       = -1;
+    uint32_t cand_topk_blocks = 0;
+    uint32_t cand_block_size  = 0;
+
     // position of layer il in the engram constants, or -1 if that layer has no engram
     int engram_index(int il) const;
 
@@ -1426,6 +1432,16 @@ struct llama_model_deepseek41 : public llama_model_deepseek4 {
                 ggml_tensor * cur,
                 ggml_tensor * inp_pos,
                 int il) const;
+
+        // level one of the two-level selection, built at the candidate source layer
+        ggml_tensor * build_candidate_mask(
+                const llama_model_deepseek41 & pmodel,
+                ggml_tensor * score,
+                ggml_tensor * mask,
+                int il) const;
+
+        // candidate mask of the current ubatch, reused by the index sources after the source
+        mutable ggml_tensor * cand_mask = nullptr;
 
         ggml_tensor * build_attention_v41(
                 const llama_model & model,
