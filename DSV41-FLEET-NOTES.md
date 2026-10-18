@@ -26,3 +26,13 @@ Device boundaries must align with the KV-sharing groups unless replicas are on. 
 extra layer (`il / 41`), so weights sum to 41 with half-integer boundaries, e.g. `-ts 1.5,6,6,6,0,12,9.5`.
 
 Not an upstream PR by intent: these are working patches shared for reference. Use, fork and improve freely.
+
+## Depth-loop experiment (2026-10-18, commit "env-gated depth-loop experiment")
+
+`DSV41_LOOP=start-end:alpha` makes the graph run layers `start..end` a second time after `end`, from the stream as it stands,
+and blends the result back as `p1 + alpha * (p2 - p1)`. Off unless the variable is set; slices containing an engram layer are
+refused. Inference-time only, nothing is trained. Measured on the run-8 layout with `30-35` (all on the PRO 6000, inside
+KV-sharing group D): greedy outputs diverge from the loop-off control within the first sentence at alpha 0.5 and 1.0, while the
+control reproduces the pre-change baseline token for token; decode speed is unchanged within noise (5.7 vs 5.3-5.7 tok/s on
+a one-stream server), because the looped layers' experts are already in that card's VRAM. Quality scoring is in progress; see
+the fleet-notes repository.
