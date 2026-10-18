@@ -163,8 +163,11 @@ public:
     ggml_type type_k() const;
     ggml_type type_v() const;
 
+    // distinct model layer ids that own storage in this cache (replicas are not listed)
     std::vector<uint32_t> get_layer_ids() const;
     ggml_tensor * get_k_storage(int32_t il) const;
+    // every physical copy of the storage layer il resolves to: the canonical owner first, then its replicas
+    std::vector<ggml_tensor *> get_k_storage_all(int32_t il) const;
 
     const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
 
@@ -192,6 +195,12 @@ public:
     // store k_cur and v_cur in the cache based on the provided head location
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const;
+
+    // dsv41 2026-10-18 (multi-device shared layers): when a layer's KV is reused by layers that live on other devices,
+    // each such device holds a replica of the owner's cache. These return the extra set_rows nodes that write the same
+    // rows into every replica; the caller expands them next to the owner's cpy_k/cpy_v. Empty when there are none.
+    std::vector<ggml_tensor *> cpy_k_extra(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
+    std::vector<ggml_tensor *> cpy_v_extra(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const;
 
     //
     // preparation API
@@ -312,6 +321,11 @@ private:
 
     // model layer id -> KV cache layer id
     std::unordered_map<int32_t, int32_t> map_layer_ids;
+
+    // owner KV cache layer id -> replica KV cache layer ids (same shape, other devices); see cpy_k_extra
+    std::unordered_map<int32_t, std::vector<int32_t>> replicas_of;
+    // replica KV cache layer id -> its canonical owner KV cache layer id
+    std::unordered_map<int32_t, int32_t> replica_owner;
 
     size_t total_size() const;
 

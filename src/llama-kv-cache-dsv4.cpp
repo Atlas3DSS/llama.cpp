@@ -408,6 +408,12 @@ static void dsv4_state_read_k_cache(
         }
 
         dsv4_state_read_tensor_streams(io, kv->get_k_storage(il), kv_size, n_rows_ref, s0, ns);
+
+        // multi-device replicas of this storage layer hold the same rows: refresh them from the owner
+        const auto copies = kv->get_k_storage_all(il);
+        for (size_t i = 1; i < copies.size(); ++i) {
+            ggml_backend_tensor_copy(copies[0], copies[i]);
+        }
     }
 }
 
@@ -1850,7 +1856,9 @@ void llama_kv_cache_dsv4::clear_compressed(llama_seq_id seq_id, bool data) {
             if (data) {
                 //TODO: do not clear the kv-cache during `seq_rm`, ref: https://github.com/ggml-org/llama.cpp/pull/26490#discussion_r3798143663
                 for (uint32_t il : kv->get_layer_ids()) {
-                    dsv4_clear_tensor_stream(kv->get_k_storage(il), (uint32_t) seq_id);
+                    for (ggml_tensor * t : kv->get_k_storage_all(il)) { // owner and its multi-device replicas
+                        dsv4_clear_tensor_stream(t, (uint32_t) seq_id);
+                    }
                 }
             }
         };
@@ -2096,6 +2104,10 @@ ggml_tensor * llama_kv_cache_dsv4_comp_context::get_k(ggml_context * ctx, int32_
 
 ggml_tensor * llama_kv_cache_dsv4_comp_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
     return kv->cpy_k(ctx, k_cur, k_idxs, il, sinfos[i_cur]);
+}
+
+std::vector<ggml_tensor *> llama_kv_cache_dsv4_comp_context::cpy_k_extra(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
+    return kv->cpy_k_extra(ctx, k_cur, k_idxs, il, sinfos[i_cur]);
 }
 
 ggml_tensor * llama_kv_cache_dsv4_comp_context::build_input_k_rot(ggml_context * ctx) const {
