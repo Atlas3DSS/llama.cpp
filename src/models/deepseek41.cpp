@@ -714,9 +714,6 @@ ggml_tensor * llama_model_deepseek41::graph::build_attention_v41(
 
             ggml_build_forward_expand(gf, inp_dsv4->mctx->get_lid()->cpy_k(
                         ctx0, idx_k, inp_comp.state_write_idxs, il));
-            for (ggml_tensor * t : inp_dsv4->mctx->get_lid()->cpy_k_extra(ctx0, idx_k, inp_comp.state_write_idxs, il)) {
-                ggml_build_forward_expand(gf, t); // replicas on other devices (multi-device shared index keys)
-            }
         }
 
         if (inp_dsv4->get_csa().k_rot) {
@@ -726,9 +723,6 @@ ggml_tensor * llama_model_deepseek41::graph::build_attention_v41(
 
         ggml_build_forward_expand(gf, inp_dsv4->mctx->get_csa()->cpy_k(
                     ctx0, latent, inp_comp.state_write_idxs, il));
-        for (ggml_tensor * t : inp_dsv4->mctx->get_csa()->cpy_k_extra(ctx0, latent, inp_comp.state_write_idxs, il)) {
-            ggml_build_forward_expand(gf, t); // replicas on other devices (multi-device shared compressed KV)
-        }
 
         // carry whatever did not complete a row into the next ubatch
         ggml_tensor * snapshot_kv    = ggml_concat(ctx0, restored.kv,    state_kv,    1);
@@ -752,10 +746,9 @@ ggml_tensor * llama_model_deepseek41::graph::build_attention_v41(
                     ctx0, persist_score, inp_comp.state_persist_dst_idxs, il));
     }
 
-    // an index source picks the positions; the layers in between reuse what it picked. Without the carry a reusing
-    // layer falls back to the full causal mask and attends to every compressed row, which matches the reference
-    // (inference/model.py Attention._compress_topk_idxs) only while a source holds <= index_topk rows.
-    // Fix from the PR #28696 review (nicholasshirley, 2026-09-28), applied locally 2026-10-17.
+    // an index source picks the positions; the layers in between reuse what it picked. Without
+    // the carry a reusing layer would fall back to the full causal mask and attend to every
+    // compressed row, which matches the reference only while a source has <= index_topk rows.
     if (hparams.dsv41_is_index_source(il)) {
         top_k_carry = build_indexer_top_k(model, inp_dsv4, inp_comp, qr, cur, inp_pos, il);
     }
@@ -839,7 +832,7 @@ llama_model_deepseek41::graph::graph(const llama_model & model, const llm_graph_
             ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hc - 1, n_tokens), 0.0f), 0);
     cb(pre_mix, "hc_pre_init", -1);
 
-    // the positions picked by the most recent index source, reused by the compressed layers that follow it
+    // the positions picked by the most recent index source, reused by the layers that follow it
     ggml_tensor * top_k_carry = nullptr;
 
     for (int il = 0; il < n_layer; ++il) {
