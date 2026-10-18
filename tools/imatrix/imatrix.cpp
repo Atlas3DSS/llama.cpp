@@ -236,6 +236,10 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * 
 
     const struct ggml_tensor * src0 = t->src[0];
     const struct ggml_tensor * src1 = t->src[1];
+    // the scheduler asks about every node; only matrix products carry a weight in src0
+    if ((t->op != GGML_OP_MUL_MAT && t->op != GGML_OP_MUL_MAT_ID) || src0 == nullptr || src1 == nullptr) {
+        return false;
+    }
     std::string wname = filter_tensor_name(src0->name);
 
     const int32_t chunk_size = m_params.n_ctx / m_params.n_parallel;
@@ -252,6 +256,12 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * 
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    // fused graph sections (e.g. DeepSeek-V4 hyper-connection ops) can leave an operand without
+    // storage of its own; there is nothing to read then
+    if (src1->buffer == nullptr || src1->data == nullptr || src0->buffer == nullptr) {
+        return true;
+    }
 
     // copy the data from the GPU memory if needed
     const bool is_host = ggml_backend_buffer_is_host(src1->buffer);
