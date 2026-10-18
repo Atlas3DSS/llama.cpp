@@ -369,6 +369,9 @@ static constexpr __device__ int ggml_cuda_mmq_get_sram_stride(ggml_type type, in
     return ggml_cuda_mmq_get_sram_stride(ggml_cuda_mmq_get_sram_layout(type, J, fallback));
 }
 
+// Widest tile in the src1/dst column direction that mul_mat_q_switch_J may select.
+static constexpr int MMQ_J_SELECT_MAX = 128;
+
 static __host__ int ggml_cuda_mmq_get_J_max(const ggml_type type, const bool fallback, const int cc, const int64_t ne11) {
     int ret = std::min(ne11, int64_t(512));
     ret -= ret % 8;
@@ -1483,7 +1486,7 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
     int J_best        = 0;
     int ntiles_J_best = INT_MAX;
 
-    for (int J = 8; J <= 128 && ntiles_J_best > 1; J += 8) {
+    for (int J = 8; J <= MMQ_J_SELECT_MAX && ntiles_J_best > 1; J += 8) {
         const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J, fallback, cc);
         if (config.type == GGML_TYPE_COUNT) {
             continue;
