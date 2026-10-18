@@ -833,6 +833,9 @@ ggml_tensor * llama_model_deepseek41::graph::build_attention_v41(
 
             ggml_build_forward_expand(gf, inp_dsv4->mctx->get_lid()->cpy_k(
                         ctx0, idx_k, inp_comp.state_write_idxs, il));
+            for (ggml_tensor * t : inp_dsv4->mctx->get_lid()->cpy_k_extra(ctx0, idx_k, inp_comp.state_write_idxs, il)) {
+                ggml_build_forward_expand(gf, t); // replicas on other devices (multi-device shared index keys)
+            }
         }
 
         if (inp_dsv4->get_csa().k_rot) {
@@ -842,6 +845,9 @@ ggml_tensor * llama_model_deepseek41::graph::build_attention_v41(
 
         ggml_build_forward_expand(gf, inp_dsv4->mctx->get_csa()->cpy_k(
                     ctx0, latent, inp_comp.state_write_idxs, il));
+        for (ggml_tensor * t : inp_dsv4->mctx->get_csa()->cpy_k_extra(ctx0, latent, inp_comp.state_write_idxs, il)) {
+            ggml_build_forward_expand(gf, t); // replicas on other devices (multi-device shared compressed KV)
+        }
 
         // carry whatever did not complete a row into the next ubatch
         ggml_tensor * snapshot_kv    = ggml_concat(ctx0, restored.kv,    state_kv,    1);
