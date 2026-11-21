@@ -1,5 +1,27 @@
 # llama.cpp
 
+> [!NOTE]
+> **This fork: faster Inkling 2 on CUDA.** Branch `inkling2-speed` is upstream master plus four commits that make
+> Inkling 2 Mini run faster on NVIDIA GPUs: the depth states are normalized once per block, and the model's small glue
+> op chains run as fused CUDA kernels (`ggml/src/ggml-cuda/inkling2.cu`). Build it the usual way (`-DGGML_CUDA=ON`);
+> nothing needs to be enabled at runtime, and other models are unaffected.
+>
+> RTX 5060 Ti 16 GB, Inkling-2-Mini-UD-IQ1_S, `llama-bench -fa 1 -ngl 99`, tokens/s:
+>
+> | context depth | prefill (pp512) upstream | prefill fork | decode (tg128) upstream | decode fork |
+> |---:|---:|---:|---:|---:|
+> | 0 | 1097 | 2193 (2.0x) | 64.5 | 88.8 (+38%) |
+> | 4K | 725 | 1903 (2.6x) | 60.6 | 84.2 (+39%) |
+> | 8K | 626 | 1783 (2.8x) | 59.5 | 81.8 (+38%) |
+> | 16K | 494 | 1595 (3.2x) | 56.0 | 77.4 (+38%) |
+> | 32K | 349 | 1320 (3.8x) | 50.6 | 69.5 (+37%) |
+> | 48K | 270 | 1108 (4.1x) | 46.4 | 63.6 (+37%) |
+> | 64K (`-ub 256`) | 222 | 902 (4.1x) | 42.9 | 58.8 (+37%) |
+>
+> Output matches upstream: most fused kernels reproduce the unfused results bit for bit, and the rest differ from
+> upstream by less than upstream differs from itself at another batch size (perplexity KLD 0.0018 decode, 0.0022
+> prefill). `test-backend-ops -o INKLING2_*` covers each fused chain.
+
 ![llama.cpp](https://raw.githubusercontent.com/ggml-org/llama-brand/refs/heads/master/logo/svg/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
 <div align="center">
