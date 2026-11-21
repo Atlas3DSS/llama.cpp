@@ -42,6 +42,19 @@
 > the V100 they differ in the last bits. Perplexity KLD against upstream, next to the KLD between two upstream runs at
 > different batch sizes: 5060 Ti decode 0.0018 vs 0.0027, prefill 0.0022 vs 0.0031; V100 decode 0.0025 vs 0.0022 (within
 > the measurement error), prefill 0.0016 vs 0.0017. `test-backend-ops -o INKLING2_*` covers each fused chain.
+>
+> **AMD (user report from @m_check1B, not run by us).** The fused kernels also build for AMD GPUs: the HIP backend
+> (`-DGGML_HIP=ON`) compiles the same CUDA sources, so no changes were needed. Radeon AI PRO R9700, Inkling-2-Mini
+> Q8_0, upstream and fork run back to back with identical settings, tokens/s:
+>
+> | context depth | prefill upstream | prefill fork | decode upstream | decode fork |
+> |---:|---:|---:|---:|---:|
+> | 0 | 1567 | 2378 (+52%) | 32.2 | 48.9 (+52%) |
+> | 8K | 685 | 1769 (2.6x) | - | - |
+> | 32K | 344 | 1190 (3.5x) | 30.2 | 47.4 (+57%) |
+>
+> They report that all 20,882 `test-backend-ops` cases pass, including the `INKLING2_*` ones, and that spot-check
+> prompts came back correct.
 
 ![llama.cpp](https://raw.githubusercontent.com/ggml-org/llama-brand/refs/heads/master/logo/svg/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
