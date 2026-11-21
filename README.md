@@ -6,7 +6,9 @@
 > op chains run as fused CUDA kernels (`ggml/src/ggml-cuda/inkling2.cu`). Build it the usual way (`-DGGML_CUDA=ON`);
 > nothing needs to be enabled at runtime, and other models are unaffected.
 >
-> RTX 5060 Ti 16 GB, Inkling-2-Mini-UD-IQ1_S, `llama-bench -fa 1 -ngl 99`, tokens/s:
+> ![Inkling 2 Mini, upstream vs fork, RTX 5060 Ti](media/inkling2-speed-5060ti.png)
+>
+> RTX 5060 Ti 16 GB, Inkling-2-Mini-UD-IQ1_S, `llama-bench -fa 1 -ngl 99`, f16 KV, tokens/s:
 >
 > | context depth | prefill (pp512) upstream | prefill fork | decode (tg128) upstream | decode fork |
 > |---:|---:|---:|---:|---:|
@@ -18,9 +20,28 @@
 > | 48K | 270 | 1108 (4.1x) | 46.4 | 63.6 (+37%) |
 > | 64K (`-ub 256`) | 222 | 902 (4.1x) | 42.9 | 58.8 (+37%) |
 >
-> Output matches upstream: most fused kernels reproduce the unfused results bit for bit, and the rest differ from
-> upstream by less than upstream differs from itself at another batch size (perplexity KLD 0.0018 decode, 0.0022
-> prefill). `test-backend-ops -o INKLING2_*` covers each fused chain.
+> ![Inkling 2 Mini, upstream vs fork, Tesla V100](media/inkling2-speed-v100.png)
+>
+> Tesla V100 32 GB, Inkling-2-Mini-UD-Q4_K_XL, `llama-bench -fa 1 -ngl 99`, f16 KV, tokens/s:
+>
+> | context depth | prefill (pp512) upstream | prefill fork | decode (tg128) upstream | decode fork |
+> |---:|---:|---:|---:|---:|
+> | 0 | 725 | 1185 (1.6x) | 32.0 | 50.7 (+59%) |
+> | 4K | 500 | 1093 (2.2x) | 31.2 | 49.6 (+59%) |
+> | 8K | 436 | 1044 (2.4x) | 30.8 | 49.0 (+59%) |
+> | 16K | 349 | 943 (2.7x) | 30.0 | 47.9 (+60%) |
+> | 32K | 250 | 825 (3.3x) | 28.5 | 45.7 (+60%) |
+> | 48K | 194 | 725 (3.7x) | 27.2 | 43.8 (+61%) |
+> | 64K | 158 | 651 (4.1x) | 25.6 | 41.4 (+62%) |
+> | 96K | 116 | 533 (4.6x) | 23.1 | 38.5 (+67%) |
+> | 128K (`-ub 256`) | 94 | 467 (4.9x) | 21.1 | 35.4 (+68%) |
+>
+> At the largest depth on each card, the default `-ub 512` runs out of memory for both builds, so that row uses `-ub 256`.
+>
+> Output quality matches upstream. On the RTX 5060 Ti most fused kernels reproduce the unfused results bit for bit; on
+> the V100 they differ in the last bits. Perplexity KLD against upstream, next to the KLD between two upstream runs at
+> different batch sizes: 5060 Ti decode 0.0018 vs 0.0027, prefill 0.0022 vs 0.0031; V100 decode 0.0025 vs 0.0022 (within
+> the measurement error), prefill 0.0016 vs 0.0017. `test-backend-ops -o INKLING2_*` covers each fused chain.
 
 ![llama.cpp](https://raw.githubusercontent.com/ggml-org/llama-brand/refs/heads/master/logo/svg/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
