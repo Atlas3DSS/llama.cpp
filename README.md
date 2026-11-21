@@ -43,7 +43,8 @@
 > different batch sizes: 5060 Ti decode 0.0018 vs 0.0027, prefill 0.0022 vs 0.0031; V100 decode 0.0025 vs 0.0022 (within
 > the measurement error), prefill 0.0016 vs 0.0017. `test-backend-ops -o INKLING2_*` covers each fused chain.
 >
-> **AMD (user report from @m_check1B, not run by us).** The fused kernels also build for AMD GPUs: the HIP backend
+> **AMD (user report from [@m_check1B](https://x.com/m_check1B/status/2124237027847938484), not run by us).** The fused
+> kernels also build for AMD GPUs: the HIP backend
 > (`-DGGML_HIP=ON`) compiles the same CUDA sources, so no changes were needed. Radeon AI PRO R9700, Inkling-2-Mini
 > Q8_0, upstream and fork run back to back with identical settings, tokens/s:
 >
