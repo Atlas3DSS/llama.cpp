@@ -2548,6 +2548,7 @@ struct llama_model_inkling2 : public llama_model_base {
         llm_graph_input_rs                  * recr = nullptr;
 
         ggml_tensor * inp_out_ids = nullptr;
+        int           visit_idx   = 0;
         ggml_tensor * tau         = nullptr; // log-scaled positions
 
     private:

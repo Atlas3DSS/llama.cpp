@@ -803,9 +803,15 @@ public:
     llm_graph_input_attn_kv_iswa * get_attn() const { return inp_attn.get(); }
     llm_graph_input_rs           * get_recr() const { return inp_rs.get(); }
 
-    // distance from the token to the cell, extent for the empty, future and more distant cells
+    // distance from the token to the cell, extent for the empty, future and more distant cells (legacy oracle path)
     ggml_tensor * self_rel_pos     = nullptr; // I32 [n_kv,     n_batch]
     ggml_tensor * self_rel_pos_swa = nullptr; // I32 [n_kv_swa, n_batch]
+
+    // Atlas v7 on-the-fly relative-position bias inputs (when use_otf_rel_bias == true)
+    bool          use_otf_rel_bias = false;
+    ggml_tensor * self_k_pos       = nullptr; // I32 [n_kv,     n_stream]
+    ggml_tensor * self_k_pos_swa   = nullptr; // I32 [n_kv_swa, n_stream]
+    ggml_tensor * self_q_pos       = nullptr; // I32 [n_tps,    n_stream]
 
     const uint32_t extent;
     const uint32_t extent_swa;
@@ -1342,7 +1348,11 @@ struct llm_graph_context {
             ggml_tensor * v_mla,   // [n_embd_head_v_mla, n_embd_head_v, n_head_v]
                 int64_t   n_kv_max,
                   float   kq_scale,
-                    int   il) const;
+                    int   il,
+            ggml_tensor * rel_table = nullptr, // [extent + 1, n_head_q, n_tps, n_stream]
+            ggml_tensor * k_pos     = nullptr, // [n_kv_cols, n_stream]
+            ggml_tensor * q_pos     = nullptr  // [n_tps, n_stream]
+            ) const;
 
     llm_graph_input_attn_no_cache * build_attn_inp_no_cache() const;
 

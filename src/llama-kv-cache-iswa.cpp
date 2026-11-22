@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 
 //
 // llama_kv_cache_iswa
@@ -99,8 +100,22 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
 
     LLAMA_LOG_INFO("%s: creating     SWA KV cache, size = %u cells\n", __func__, size_swa);
 
+    // Atlas v7 Hybrid KV: keep SWA layers (~170 MiB total at FP16) unquantized when ATLAS_HYBRID_SWA_F16=1
+    // to prevent Layer-0 FP8 attention error from flipping Inkling-2 MoE router near-ties.
+    ggml_type swa_type_k = type_k;
+    ggml_type swa_type_v = type_v;
+    if (!swa_full && (model.arch == LLM_ARCH_INKLING2 || model.arch == LLM_ARCH_INKLING2_LOOP)) {
+        const char * hybrid_env = std::getenv("ATLAS_HYBRID_SWA_F16");
+        if (hybrid_env && hybrid_env[0] == '1') {
+            swa_type_k = GGML_TYPE_F16;
+            swa_type_v = GGML_TYPE_F16;
+            LLAMA_LOG_INFO("%s: Atlas v7 hybrid KV active: SWA KV forced to F16 (base KV stays %s/%s)\n",
+                    __func__, ggml_type_name(type_k), ggml_type_name(type_v));
+        }
+    }
+
     kv_swa = std::make_unique<llama_kv_cache>(
-            model, no_alloc, hparams, type_k, type_v,
+            model, no_alloc, hparams, swa_type_k, swa_type_v,
             v_trans, offload, unified, size_swa, n_seq_max,
             hparams.n_swa, hparams.swa_type, mem_other_swa, filter_swa, reuse, share);
 }
