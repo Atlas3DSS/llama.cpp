@@ -54,22 +54,22 @@ static constexpr int ATLAS_STRIDE_TILE_KV = 64; // half2s (128 halfs = 256 bytes
 static constexpr int ATLAS_STRIDE_TILE_Q  = 68; // DKQ/2 + 4
 static constexpr int ATLAS_NBATCH_COMBINE = 64;
 
-template <int ncols> struct atlas_mma_tiles {
+template <int ncols, bool fp32_vkq = false> struct atlas_mma_tiles {
     using T_A_KQ  = tile<16,  8, half2>;
     using T_B_KQ  = tile<16,  8, half2>;
     using T_C_KQ  = tile<16, 16, float>;
     using T_A_VKQ = tile<16,  8, half2>;
     using T_B_VKQ = tile<16,  8, half2>;
-    using T_C_VKQ = tile<16,  8, half2>;
+    using T_C_VKQ = typename std::conditional<fp32_vkq, tile<16, 16, float>, tile<16, 8, half2>>::type;
 };
 
-template <> struct atlas_mma_tiles<8> {
+template <bool fp32_vkq> struct atlas_mma_tiles<8, fp32_vkq> {
     using T_A_KQ  = tile<16,  8, half2>;
     using T_B_KQ  = tile< 8,  8, half2>;
     using T_C_KQ  = tile<16,  8, float>;
     using T_A_VKQ = tile<16,  8, half2>;
     using T_B_VKQ = tile< 8,  8, half2>;
-    using T_C_VKQ = tile<16,  4, half2>;
+    using T_C_VKQ = typename std::conditional<fp32_vkq, tile<16, 8, float>, tile<16, 4, half2>>::type;
 };
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -307,7 +307,7 @@ static __device__ __forceinline__ void atlas_load_k_pos(
 // ------------------------------------------------------------------------------------------------------------------
 // Core iteration over one 64-key KV tile
 // ------------------------------------------------------------------------------------------------------------------
-template <int ncols1, int ncols2, ggml_type type_K, ggml_type type_V, bool use_cp_async_2stage, bool last_iter, bool oob_check>
+template <int ncols1, int ncols2, ggml_type type_K, ggml_type type_V, bool use_cp_async_2stage, bool last_iter, bool oob_check, bool fp32_vkq>
 static __device__ __forceinline__ void atlas_fattn_rel_iter(
         const char    * const __restrict__ K_bytes,
         const char    * const __restrict__ V_bytes,
@@ -329,8 +329,8 @@ static __device__ __forceinline__ void atlas_fattn_rel_iter(
         uint8_t * const __restrict__ tile_raw_V,
         half    * const __restrict__ tile_mask,
         int32_t * const __restrict__ tile_k_pos,
-        typename atlas_mma_tiles<ncols1 * ncols2>::T_B_KQ  * const __restrict__ Q_B,
-        typename atlas_mma_tiles<ncols1 * ncols2>::T_C_VKQ * const __restrict__ VKQ_C,
+        typename atlas_mma_tiles<ncols1 * ncols2, fp32_vkq>::T_B_KQ  * const __restrict__ Q_B,
+        typename atlas_mma_tiles<ncols1 * ncols2, fp32_vkq>::T_C_VKQ * const __restrict__ VKQ_C,
         float * const __restrict__ KQ_max,
         float * const __restrict__ KQ_rowsum,
         const int jt,
@@ -339,12 +339,12 @@ static __device__ __forceinline__ void atlas_fattn_rel_iter(
         const int k_VKQ_sup) {
 #if defined(TURING_MMA_AVAILABLE)
     constexpr int ncols         = ncols1 * ncols2;
-    using T_A_KQ  = typename atlas_mma_tiles<ncols>::T_A_KQ;
-    using T_B_KQ  = typename atlas_mma_tiles<ncols>::T_B_KQ;
-    using T_C_KQ  = typename atlas_mma_tiles<ncols>::T_C_KQ;
-    using T_A_VKQ = typename atlas_mma_tiles<ncols>::T_A_VKQ;
-    using T_B_VKQ = typename atlas_mma_tiles<ncols>::T_B_VKQ;
-    using T_C_VKQ = typename atlas_mma_tiles<ncols>::T_C_VKQ;
+    using T_A_KQ  = typename atlas_mma_tiles<ncols, fp32_vkq>::T_A_KQ;
+    using T_B_KQ  = typename atlas_mma_tiles<ncols, fp32_vkq>::T_B_KQ;
+    using T_C_KQ  = typename atlas_mma_tiles<ncols, fp32_vkq>::T_C_KQ;
+    using T_A_VKQ = typename atlas_mma_tiles<ncols, fp32_vkq>::T_A_VKQ;
+    using T_B_VKQ = typename atlas_mma_tiles<ncols, fp32_vkq>::T_B_VKQ;
+    using T_C_VKQ = typename atlas_mma_tiles<ncols, fp32_vkq>::T_C_VKQ;
 
     constexpr int cols_per_warp = T_B_KQ::I;
     constexpr int np            = ATLAS_NWARPS * cols_per_warp / ncols;
@@ -593,7 +593,25 @@ static __device__ __forceinline__ void atlas_fattn_rel_iter(
             KQ_rowsum[col] = KQ_max_scale[col] * KQ_rowsum[col] + KQ_rowsum_add[col];
         }
 
-        if constexpr (cols_per_warp == 8) {
+        if constexpr (fp32_vkq) {
+            if constexpr (cols_per_warp == 8) {
+#pragma unroll
+                for (int i = 0; i < ATLAS_DV / T_C_VKQ::I; ++i) {
+#pragma unroll
+                    for (int l = 0; l < T_C_VKQ::ne; ++l) {
+                        VKQ_C[i].x[l] *= KQ_max_scale[l % 2];
+                    }
+                }
+            } else {
+#pragma unroll
+                for (int i = 0; i < ATLAS_DV / T_C_VKQ::J; ++i) {
+#pragma unroll
+                    for (int l = 0; l < T_C_VKQ::ne; ++l) {
+                        VKQ_C[i].x[l] *= KQ_max_scale[(l / 2) % 2];
+                    }
+                }
+            }
+        } else if constexpr (cols_per_warp == 8) {
             const half2 KQ_max_scale_h2 = make_half2(KQ_max_scale[0], KQ_max_scale[1]);
 #pragma unroll
             for (int i = 0; i < ATLAS_DV / T_C_VKQ::I; ++i) {
@@ -692,7 +710,7 @@ static __device__ __forceinline__ void atlas_fattn_rel_iter(
 // ------------------------------------------------------------------------------------------------------------------
 // Process one output tile (jt, zt_gqa, z_KV, sequence) across [kb0_start, kb0_stop)
 // ------------------------------------------------------------------------------------------------------------------
-template <int ncols1, int ncols2, ggml_type type_K, ggml_type type_V, bool kv_aligned, bool needs_fixup, bool is_fixup>
+template <int ncols1, int ncols2, ggml_type type_K, ggml_type type_V, bool kv_aligned, bool needs_fixup, bool is_fixup, bool fp32_vkq>
 static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
         const float2  * const __restrict__ Q_f2,
         const char    * const __restrict__ K_bytes,
@@ -727,10 +745,10 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
         const int     kb0_max) {
 #if defined(TURING_MMA_AVAILABLE)
     constexpr int ncols = ncols1 * ncols2;
-    using T_A_KQ  = typename atlas_mma_tiles<ncols>::T_A_KQ;
-    using T_B_KQ  = typename atlas_mma_tiles<ncols>::T_B_KQ;
-    using T_C_KQ  = typename atlas_mma_tiles<ncols>::T_C_KQ;
-    using T_C_VKQ = typename atlas_mma_tiles<ncols>::T_C_VKQ;
+    using T_A_KQ  = typename atlas_mma_tiles<ncols, fp32_vkq>::T_A_KQ;
+    using T_B_KQ  = typename atlas_mma_tiles<ncols, fp32_vkq>::T_B_KQ;
+    using T_C_KQ  = typename atlas_mma_tiles<ncols, fp32_vkq>::T_C_KQ;
+    using T_C_VKQ = typename atlas_mma_tiles<ncols, fp32_vkq>::T_C_VKQ;
 
     constexpr int cols_per_warp = T_B_KQ::I;
     constexpr int np            = ATLAS_NWARPS * cols_per_warp / ncols;
@@ -764,7 +782,7 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
     int32_t * tile_k_pos = (int32_t *)(tile_mask + ncols1 * (ATLAS_NBATCH_FA + 8));
 
     T_B_KQ  Q_B[ATLAS_DKQ / (2 * T_B_KQ::J)];
-    T_C_VKQ VKQ_C[cols_per_warp == 8 ? ATLAS_DV / T_C_VKQ::I : ATLAS_DV / (2 * T_C_VKQ::J)];
+    T_C_VKQ VKQ_C[ATLAS_DV / 16];
 
     float KQ_rowsum[2] = { 0.0f, 0.0f };
     float KQ_max[2]    = { -FLT_MAX / 2.0f, -FLT_MAX / 2.0f };
@@ -847,7 +865,7 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
 
         for (int ikb = 1; ikb < nkb; ++ikb) {
             const int kb0_next = (kb0 + 1 == kb0_max) ? 0 : (kb0 + 1);
-            atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, true, false, false>(
+            atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, true, false, false, fp32_vkq>(
                 K_bytes, V_bytes, mask_h, indices, k_pos_seq,
                 q_pos_col, rel_row, far_bias, rel_extent, rel_f16_round,
                 ne01, stride_K_bytes, stride_V_bytes, stride_mask,
@@ -855,7 +873,7 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
                 Q_B, VKQ_C, KQ_max, KQ_rowsum, jt, kb0, kb0_next, ATLAS_NBATCH_FA);
             kb0 = kb0_next;
         }
-        atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, true, true, false>(
+        atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, true, true, false, fp32_vkq>(
             K_bytes, V_bytes, mask_h, indices, k_pos_seq,
             q_pos_col, rel_row, far_bias, rel_extent, rel_f16_round,
             ne01, stride_K_bytes, stride_V_bytes, stride_mask,
@@ -863,7 +881,7 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
             Q_B, VKQ_C, KQ_max, KQ_rowsum, jt, kb0, kb0, ATLAS_NBATCH_FA);
     } else if constexpr (!kv_aligned) {
         for (; kb0 < kb0_stop - 1; ++kb0) {
-            atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, false, false, true>(
+            atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, false, false, true, fp32_vkq>(
                 K_bytes, V_bytes, mask_h, indices, k_pos_seq,
                 q_pos_col, rel_row, far_bias, rel_extent, rel_f16_round,
                 ne01, stride_K_bytes, stride_V_bytes, stride_mask,
@@ -871,7 +889,7 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
                 Q_B, VKQ_C, KQ_max, KQ_rowsum, jt, kb0, kb0 + 1, ATLAS_NBATCH_FA);
         }
         const int k_VKQ_sup = ne11 - kb0 * ATLAS_NBATCH_FA;
-        atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, false, true, true>(
+        atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, false, true, true, fp32_vkq>(
             K_bytes, V_bytes, mask_h, indices, k_pos_seq,
             q_pos_col, rel_row, far_bias, rel_extent, rel_f16_round,
             ne01, stride_K_bytes, stride_V_bytes, stride_mask,
@@ -879,14 +897,14 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
             Q_B, VKQ_C, KQ_max, KQ_rowsum, jt, kb0, kb0, k_VKQ_sup);
     } else {
         for (; kb0 < kb0_stop - 1; ++kb0) {
-            atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, false, false, false>(
+            atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, false, false, false, fp32_vkq>(
                 K_bytes, V_bytes, mask_h, indices, k_pos_seq,
                 q_pos_col, rel_row, far_bias, rel_extent, rel_f16_round,
                 ne01, stride_K_bytes, stride_V_bytes, stride_mask,
                 tile_K, tile_V, tile_raw_K, tile_raw_V, tile_mask, tile_k_pos,
                 Q_B, VKQ_C, KQ_max, KQ_rowsum, jt, kb0, kb0 + 1, ATLAS_NBATCH_FA);
         }
-        atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, false, true, false>(
+        atlas_fattn_rel_iter<ncols1, ncols2, type_K, type_V, false, true, false, fp32_vkq>(
             K_bytes, V_bytes, mask_h, indices, k_pos_seq,
             q_pos_col, rel_row, far_bias, rel_extent, rel_f16_round,
             ne01, stride_K_bytes, stride_V_bytes, stride_mask,
@@ -930,7 +948,25 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
             KQ_rowsum[col] = KQ_max_scale[col] * KQ_rowsum[col] + KQ_max_add;
         }
 
-        if constexpr (cols_per_warp == 8) {
+        if constexpr (fp32_vkq) {
+            if constexpr (cols_per_warp == 8) {
+#pragma unroll
+                for (int i = 0; i < ATLAS_DV / T_C_VKQ::I; ++i) {
+#pragma unroll
+                    for (int l = 0; l < T_C_VKQ::ne; ++l) {
+                        VKQ_C[i].x[l] *= KQ_max_scale[l % 2];
+                    }
+                }
+            } else {
+#pragma unroll
+                for (int i = 0; i < ATLAS_DV / T_C_VKQ::J; ++i) {
+#pragma unroll
+                    for (int l = 0; l < T_C_VKQ::ne; ++l) {
+                        VKQ_C[i].x[l] *= KQ_max_scale[(l / 2) % 2];
+                    }
+                }
+            }
+        } else if constexpr (cols_per_warp == 8) {
             const half2 KQ_max_scale_h2 = make_half2(KQ_max_scale[0], KQ_max_scale[1]);
 #pragma unroll
             for (int i = 0; i < ATLAS_DV / T_C_VKQ::I; ++i) {
@@ -956,12 +992,13 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
 
     // Combine VKQ across parallel warps (np) via shared memory & write to dstk / dstk_fixup
     constexpr int tile_stride = ATLAS_NBATCH_COMBINE + 4;
+    using T_C_VKQ_H2 = tile<16, cols_per_warp == 8 ? 4 : 8, half2>;
     if constexpr (cols_per_warp == 8) {
-        const int jc_cwmo = (threadIdx.x % (2 * T_C_VKQ::J)) / T_C_VKQ::J;
-        const int jc_cwm  = threadIdx.y * (2 * T_C_VKQ::J) + 2 * T_C_VKQ::get_j(-1) + jc_cwmo;
+        const int jc_cwmo = (threadIdx.x % (2 * T_C_VKQ_H2::J)) / T_C_VKQ_H2::J;
+        const int jc_cwm  = threadIdx.y * (2 * T_C_VKQ_H2::J) + 2 * T_C_VKQ_H2::get_j(-1) + jc_cwmo;
         const float2 KQ_cmr = make_float2(KQ_max[jc_cwmo], KQ_rowsum[jc_cwmo]);
         __syncthreads();
-        if (((!needs_fixup && !is_fixup) || np > 1) && threadIdx.x < 2 * T_C_VKQ::J) {
+        if (((!needs_fixup && !is_fixup) || np > 1) && threadIdx.x < 2 * T_C_VKQ_H2::J) {
             ((float2 *) tile_Q)[jc_cwm * (tile_stride / 2) + ATLAS_NBATCH_COMBINE / 2] = KQ_cmr;
         }
         __syncthreads();
@@ -974,7 +1011,7 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
             }
         }
     } else {
-        const int jc_cwm = threadIdx.y * cols_per_warp + T_C_VKQ::get_i(threadIdx.x % 4);
+        const int jc_cwm = threadIdx.y * cols_per_warp + T_C_VKQ_H2::get_i(threadIdx.x % 4);
         const float2 KQ_cmr = make_float2(KQ_max[threadIdx.x % 2], KQ_rowsum[threadIdx.x % 2]);
         const bool thread_should_write = (threadIdx.x % 4) < 2;
         __syncthreads();
@@ -1055,7 +1092,13 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
         const int jc_cwd = threadIdx.y * T_B_KQ::I + T_B_KQ::get_i(-1);
 #pragma unroll
         for (int k1 = 0; k1 < ATLAS_NBATCH_COMBINE; k1 += T_B_KQ::J) {
-            const T_B_KQ B = get_transposed(VKQ_C[k1 / T_B_KQ::J]);
+            const T_B_KQ B = [&]() {
+                if constexpr (fp32_vkq) {
+                    return get_transposed(get_half2(VKQ_C[k1 / T_B_KQ::J]));
+                } else {
+                    return get_transposed(VKQ_C[k1 / T_B_KQ::J]);
+                }
+            }();
 #pragma unroll
             for (int l = 0; l < T_B_KQ::ne; ++l) {
                 tile_Q[jc_cwd * tile_stride + k1 + T_B_KQ::get_j(l)] = B.x[l];
@@ -1064,12 +1107,19 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
     } else {
         const int j0 = threadIdx.y * cols_per_warp;
 #pragma unroll
-        for (int k1 = 0; k1 < ATLAS_NBATCH_COMBINE; k1 += T_C_VKQ::J) {
+        for (int k1 = 0; k1 < ATLAS_NBATCH_COMBINE; k1 += T_C_VKQ_H2::J) {
+            const T_C_VKQ_H2 H = [&]() {
+                if constexpr (fp32_vkq) {
+                    return get_half2(VKQ_C[k1 / T_C_VKQ_H2::J]);
+                } else {
+                    return VKQ_C[k1 / T_C_VKQ_H2::J];
+                }
+            }();
 #pragma unroll
-            for (int l = 0; l < T_C_VKQ::ne; ++l) {
-                const int j = j0 + T_C_VKQ::get_i(l);
-                const int k = k1 + T_C_VKQ::get_j(l);
-                tile_Q[j * tile_stride + k] = VKQ_C[k1 / T_C_VKQ::J].x[l];
+            for (int l = 0; l < T_C_VKQ_H2::ne; ++l) {
+                const int j = j0 + T_C_VKQ_H2::get_i(l);
+                const int k = k1 + T_C_VKQ_H2::get_j(l);
+                tile_Q[j * tile_stride + k] = H.x[l];
             }
         }
     }
@@ -1126,7 +1176,7 @@ static __device__ __forceinline__ void atlas_fattn_rel_process_tile(
 // ------------------------------------------------------------------------------------------------------------------
 // Stream-K FlashAttention Kernel Entry Point
 // ------------------------------------------------------------------------------------------------------------------
-template <int ncols1, int ncols2, ggml_type type_K, ggml_type type_V, bool kv_aligned>
+template <int ncols1, int ncols2, ggml_type type_K, ggml_type type_V, bool kv_aligned, bool fp32_vkq>
 __launch_bounds__(ATLAS_NTHREADS, 2)
 static __global__ void atlas_flash_attn_ext_rel_kernel(
         const char    * Q_ptr,
@@ -1213,14 +1263,14 @@ static __global__ void atlas_flash_attn_ext_rel_kernel(
         const int kb0_rot = rotate ? ((kbc - kbc_tile) % iter_k) : kb0_start;
 
         if (kb0_start == 0) {
-            atlas_fattn_rel_process_tile<ncols1, ncols2, type_K, type_V, kv_aligned, false, false>(
+            atlas_fattn_rel_process_tile<ncols1, ncols2, type_K, type_V, kv_aligned, false, false, fp32_vkq>(
                 Q_f2, K_bytes, V_bytes, mask_h, indices, sinks_f, rel_seq, kp_seq, qp_seq,
                 dstk, dst_meta_ptr, scale, ne01, ne02, gqa_ratio, ne11,
                 stride_Q1, stride_Q2, nb11, nb21, stride_mask,
                 rel_extent, rel_s1, rel_s2, rel_f16_round, jt, zt_gqa, zt_Q,
                 kb0_rot, kb0_rot + kb0_stop - kb0_start, kb0_max);
         } else {
-            atlas_fattn_rel_process_tile<ncols1, ncols2, type_K, type_V, kv_aligned, true, false>(
+            atlas_fattn_rel_process_tile<ncols1, ncols2, type_K, type_V, kv_aligned, true, false, fp32_vkq>(
                 Q_f2, K_bytes, V_bytes, mask_h, indices, sinks_f, rel_seq, kp_seq, qp_seq,
                 dstk, dst_meta_ptr, scale, ne01, ne02, gqa_ratio, ne11,
                 stride_Q1, stride_Q2, nb11, nb21, stride_mask,
@@ -1263,7 +1313,7 @@ static __global__ void atlas_flash_attn_ext_rel_kernel(
     const int kb0_max = (rotate && KV_max_ptr) ? (KV_max_ptr[sequence * iter_j + jt] / ATLAS_NBATCH_FA) : iter_k;
     const int kb0_rot = rotate ? ((kbc - kbc_tile) % iter_k) : kb0_start;
 
-    atlas_fattn_rel_process_tile<ncols1, ncols2, type_K, type_V, kv_aligned, false, true>(
+    atlas_fattn_rel_process_tile<ncols1, ncols2, type_K, type_V, kv_aligned, false, true, fp32_vkq>(
         Q_f2, K_bytes, V_bytes, mask_h, indices, sinks_f, rel_seq, kp_seq, qp_seq,
         dstk, dst_meta_ptr, scale, ne01, ne02, gqa_ratio, ne11,
         stride_Q1, stride_Q2, nb11, nb21, stride_mask,
@@ -1290,7 +1340,15 @@ static bool atlas_rel_f16_round_enabled() {
     return enabled;
 }
 
-template <int ncols1, int ncols2, ggml_type type_K, ggml_type type_V, bool kv_aligned>
+static bool atlas_rel_fp32_acc_enabled() {
+    static const bool enabled = []() {
+        const char * env = std::getenv("ATLAS_RELBIAS_FP32_ACC");
+        return env && env[0] == '1';
+    }();
+    return enabled;
+}
+
+template <int ncols1, int ncols2, ggml_type type_K, ggml_type type_V, bool kv_aligned, bool fp32_vkq>
 static void launch_atlas_fattn_rel(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     constexpr int ncols = ncols1 * ncols2;
 
@@ -1382,7 +1440,7 @@ static void launch_atlas_fattn_rel(ggml_backend_cuda_context & ctx, ggml_tensor 
     const size_t nbytes_combine = ATLAS_NWARPS * std::min(ncols, 16) * (ATLAS_NBATCH_COMBINE + 4) * sizeof(half2);
     const size_t nbytes_shared  = std::max({ nbytes_combine, nbytes_q, nbytes_kv_conv + nbytes_raw_k + nbytes_raw_v + nbytes_mask + nbytes_kpos });
 
-    auto kernel = atlas_flash_attn_ext_rel_kernel<ncols1, ncols2, type_K, type_V, kv_aligned>;
+    auto kernel = atlas_flash_attn_ext_rel_kernel<ncols1, ncols2, type_K, type_V, kv_aligned, fp32_vkq>;
     static bool shared_raised[GGML_CUDA_MAX_DEVICES] = { false };
     if (!shared_raised[id] && nbytes_shared > 48 * 1024) {
         CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes_shared));
@@ -1503,17 +1561,26 @@ static void launch_atlas_fattn_rel(ggml_backend_cuda_context & ctx, ggml_tensor 
     CUDA_CHECK(cudaGetLastError());
 }
 
+template <int ncols1, int ncols2, ggml_type type_K, ggml_type type_V, bool kv_aligned>
+static void dispatch_atlas_fattn_rel_acc(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    if (atlas_rel_fp32_acc_enabled()) {
+        launch_atlas_fattn_rel<ncols1, ncols2, type_K, type_V, kv_aligned, true>(ctx, dst);
+    } else {
+        launch_atlas_fattn_rel<ncols1, ncols2, type_K, type_V, kv_aligned, false>(ctx, dst);
+    }
+}
+
 template <int ncols1, int ncols2, bool kv_aligned>
 static void dispatch_atlas_fattn_rel_kv(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_type tk = dst->src[1]->type;
     const ggml_type tv = dst->src[2]->type;
 
     if (tk == GGML_TYPE_F8_E4M3 && tv == GGML_TYPE_F8_E4M3) {
-        launch_atlas_fattn_rel<ncols1, ncols2, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, kv_aligned>(ctx, dst);
+        dispatch_atlas_fattn_rel_acc<ncols1, ncols2, GGML_TYPE_F8_E4M3, GGML_TYPE_F8_E4M3, kv_aligned>(ctx, dst);
     } else if (tk == GGML_TYPE_Q8_0 && tv == GGML_TYPE_Q8_0) {
-        launch_atlas_fattn_rel<ncols1, ncols2, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, kv_aligned>(ctx, dst);
+        dispatch_atlas_fattn_rel_acc<ncols1, ncols2, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, kv_aligned>(ctx, dst);
     } else {
-        launch_atlas_fattn_rel<ncols1, ncols2, GGML_TYPE_F16, GGML_TYPE_F16, kv_aligned>(ctx, dst);
+        dispatch_atlas_fattn_rel_acc<ncols1, ncols2, GGML_TYPE_F16, GGML_TYPE_F16, kv_aligned>(ctx, dst);
     }
 }
 
