@@ -300,6 +300,9 @@ struct server_slot {
     // speculative decoding
     common_speculative * spec;
 
+    // dynamic loop gearing state of the currently cached prompt KV in this slot
+    int32_t loop_passes = 0;
+
     llama_tokens spec_draft;
 
     // draft candidates per token in spec_draft; only draft-simple and draft-mtp fill it
@@ -557,6 +560,7 @@ struct server_slot {
 
         return task->type == other_slot.task->type
             && inp_embd.size() == other_slot.inp_embd.size()
+            && task->params.loop_passes == other_slot.task->params.loop_passes
             && are_lora_equal(lora, other_slot.lora);
     }
 
@@ -1901,6 +1905,12 @@ private:
     }
 
     bool launch_slot_with_task(server_slot & slot, server_task && task) {
+        if (slot.loop_passes != task.params.loop_passes) {
+            SLT_TRC(slot, "clearing cache for loop_passes change: %d -> %d\n", slot.loop_passes, task.params.loop_passes);
+            slot.prompt.clear();
+            slot.loop_passes = task.params.loop_passes;
+        }
+
         auto task_loras = get_task_lora(task);
 
         // the state can come from the prompt cache, so it is compared with its own lora config, not with the one of the last task
@@ -4644,6 +4654,11 @@ private:
 
         // yield to the queue, so we can still handle metrics tasks while decoding
         // note: the sync is done here too, so that the wait is also covered by the yield
+        const uint32_t req_loop_passes = (batch.slot_batched && batch.slot_batched->task)
+            ? (uint32_t) std::max(0, batch.slot_batched->task->params.loop_passes)
+            : 0u;
+        llama_set_n_loop_passes(ctx_tgt, req_loop_passes);
+
         int ret = 0;
         queue_tasks.yield_to_queue([&]() {
             ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());

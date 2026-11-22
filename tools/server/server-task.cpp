@@ -67,6 +67,7 @@ json task_params::to_json(bool only_metrics) const {
             {"adaptive_decay",            sampling.adaptive_decay},
             {"max_tokens",                n_predict},
             {"n_predict",                 n_predict}, // TODO: deduplicate?
+            {"loop_passes",               loop_passes},
             {"n_keep",                    n_keep},
             {"n_discard",                 n_discard},
             {"ignore_eos",                sampling.ignore_eos},
@@ -121,6 +122,7 @@ json task_params::to_json(bool only_metrics) const {
         {"stop",                      antiprompt},
         {"max_tokens",                n_predict},
         {"n_predict",                 n_predict}, // TODO: deduplicate?
+        {"loop_passes",               loop_passes},
         {"n_keep",                    n_keep},
         {"n_discard",                 n_discard},
         {"ignore_eos",                sampling.ignore_eos},

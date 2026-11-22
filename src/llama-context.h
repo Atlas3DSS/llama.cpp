@@ -137,6 +137,8 @@ struct llama_context {
     bool set_ctx_state_src(llama_context * ctx_src);
     bool supports_state_row() const;
     void set_nextn_layer_offset(int32_t offset);
+    void set_n_loop_passes(uint32_t n_passes);
+    uint32_t n_loop_passes() const;
     void set_causal_attn(bool value);
 
     void set_adapters_lora(llama_adapter_lora ** adapters, size_t n_adapters, float * scales);

@@ -20,6 +20,7 @@ struct llama_cparams {
     int32_t  n_threads_batch; // number of threads to use for batch processing
 
     int32_t  nextn_layer_offset = 0;
+    uint32_t n_loop_passes      = 0; // active loop passes for looped models (0 = model default)
 
     float rope_freq_base;
     float rope_freq_scale;

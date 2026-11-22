@@ -1680,6 +1680,14 @@ void llama_context::set_nextn_layer_offset(int32_t offset) {
     cparams.nextn_layer_offset = offset;
 }
 
+void llama_context::set_n_loop_passes(uint32_t n_passes) {
+    cparams.n_loop_passes = n_passes;
+}
+
+uint32_t llama_context::n_loop_passes() const {
+    return cparams.n_loop_passes;
+}
+
 void llama_context::set_causal_attn(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
@@ -4622,6 +4630,14 @@ void llama_detach_threadpool(llama_context * ctx) {
 
 void llama_set_n_threads(llama_context * ctx, int32_t n_threads, int32_t n_threads_batch) {
     ctx->set_n_threads(n_threads, n_threads_batch);
+}
+
+void llama_set_n_loop_passes(llama_context * ctx, uint32_t n_passes) {
+    ctx->set_n_loop_passes(n_passes);
+}
+
+uint32_t llama_n_loop_passes(const llama_context * ctx) {
+    return ctx->n_loop_passes();
 }
 
 int32_t llama_n_threads(llama_context * ctx) {

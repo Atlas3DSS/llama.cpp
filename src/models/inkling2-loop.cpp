@@ -87,7 +87,10 @@ llama_model_inkling2_loop::graph::graph(const llm_graph_params & params) : llama
     // every pass starts from the prelude output
     auto * prelude = cur;
     const auto prelude_blocks = blocks;
-    for (uint32_t pass = 0; pass < m.n_passes; ++pass) {
+    const uint32_t active_passes = (cparams.n_loop_passes > 0 && cparams.n_loop_passes <= m.n_passes)
+        ? cparams.n_loop_passes
+        : m.n_passes;
+    for (uint32_t pass = 0; pass < active_passes; ++pass) {
         // the bank of the previous pass: its blocks after the first core block, and its output
         std::vector<ggml_tensor *> bank;
         ggml_tensor * bank_out = nullptr;

@@ -1108,6 +1108,10 @@ extern "C" {
     // n_threads_batch is the number of threads used for prompt and batch processing (multiple tokens)
     LLAMA_API void llama_set_n_threads(struct llama_context * ctx, int32_t n_threads, int32_t n_threads_batch);
 
+    // Dynamic loop gearing for looped models (e.g. inkling2_loop): set active loop passes (0 = model default)
+    LLAMA_API void     llama_set_n_loop_passes(struct llama_context * ctx, uint32_t n_passes);
+    LLAMA_API uint32_t llama_n_loop_passes(const struct llama_context * ctx);
+
     // Get the number of threads used for generation of a single token.
     LLAMA_API int32_t llama_n_threads(struct llama_context * ctx);
 

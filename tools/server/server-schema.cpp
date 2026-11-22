@@ -49,6 +49,10 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
         ->add_alias("max_tokens")
         ->set_desc("Set the maximum number of tokens to predict. When 0, no tokens will be generated but the prompt is evaluated into the cache"));
 
+    add((new field_num("loop_passes", params.loop_passes))
+        ->set_hard_limits(0, 16)
+        ->set_desc("Dynamic loop passes override for looped models (0 = model default)"));
+
     add((new field_num("n_indent", params.n_indent))
         ->set_hard_limits(0, INT32_MAX)
         ->set_desc("Specify the minimum line indentation for the generated text in number of whitespace characters. Useful for code completion tasks"));
