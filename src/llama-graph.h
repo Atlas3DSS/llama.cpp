@@ -860,10 +860,11 @@ struct llm_graph_params {
     const llama_cross            * cross;
     const llama_moe_cache        * moe_cache;
 
-    ggml_tensor * layer_inp_dev = nullptr; // own layer input device buffer (write)
-    ggml_tensor * layer_inp_src = nullptr; // ctx_other's layer input device buffer (read)
-    ggml_tensor * h_nextn_dev   = nullptr; // own h_nextn device buffer (write)
-    ggml_tensor * h_nextn_src   = nullptr; // ctx_state_src's h_nextn device buffer (read)
+    ggml_tensor * layer_inp_dev    = nullptr; // own layer input device buffer (write)
+    ggml_tensor * layer_inp_src    = nullptr; // ctx_other's layer input device buffer (read)
+    ggml_tensor * h_nextn_dev      = nullptr; // own h_nextn device buffer (write)
+    ggml_tensor * h_nextn_src      = nullptr; // ctx_state_src's h_nextn device buffer (read)
+    ggml_tensor * dspark_f_rnn_dev = nullptr; // Inkling-2 DSpark per-seq f_rnn cache (read/write)
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -957,10 +958,11 @@ struct llm_graph_params {
             cparams.embeddings_nextn        == other.cparams.embeddings_nextn        &&
             cparams.embeddings_nextn_masked == other.cparams.embeddings_nextn_masked &&
             cparams.causal_attn             == other.cparams.causal_attn             &&
-            layer_inp_dev == other.layer_inp_dev &&
-            layer_inp_src == other.layer_inp_src &&
-            h_nextn_dev   == other.h_nextn_dev   &&
-            h_nextn_src   == other.h_nextn_src   &&
+            layer_inp_dev    == other.layer_inp_dev    &&
+            layer_inp_src    == other.layer_inp_src    &&
+            h_nextn_dev      == other.h_nextn_dev      &&
+            h_nextn_src      == other.h_nextn_src      &&
+            dspark_f_rnn_dev == other.dspark_f_rnn_dev &&
             model == other.model &&
             gtype == other.gtype &&
             cvec  == other.cvec  &&
@@ -1140,6 +1142,7 @@ struct llm_graph_context {
     ggml_tensor * layer_inp_src;
     ggml_tensor * h_nextn_dev;
     ggml_tensor * h_nextn_src;
+    ggml_tensor * dspark_f_rnn_dev;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 

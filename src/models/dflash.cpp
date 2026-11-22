@@ -70,6 +70,9 @@ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
     } else if (ml.get_key(LLM_KV_ATTENTION_KV_LORA_RANK, hparams.n_lora_kv, false)) {
         load_hparams_mistral_large4(ml);
         backbone = BACKBONE_MISTRAL_LARGE4;
+    } else if (ml.get_tensor_meta("dspark_fuse.weight") != nullptr) {
+        load_hparams_inkling2(ml);
+        backbone = BACKBONE_INKLING2;
     } else if (ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, hparams.n_swa, false) && hparams.n_swa > 0) {
         // optional interleaved sliding-window attention with per-layer pattern array.
         // DFlash has a single rope, so the SWA rope == main rope.
@@ -107,10 +110,12 @@ void llama_model_dflash::load_arch_tensors(llama_model_loader &) {
         case VARIANT_DFLASH:                                       break;
     }
 
-    fc              = create_tensor(tn(LLM_TENSOR_FC,              "weight"), { n_embd_inp, n_embd }, 0);
-    fc_s            = create_tensor(tn(LLM_TENSOR_FC,              "scale"),  { 1 }, TENSOR_NOT_REQUIRED);
-    fc_in_s         = create_tensor(tn(LLM_TENSOR_FC,              "input_scale"), { 1 }, TENSOR_NOT_REQUIRED);
-    output_norm_enc = create_tensor(tn(LLM_TENSOR_ENC_OUTPUT_NORM, "weight"), { n_embd }, 0); // encoder hidden_norm (after fc)
+    if (backbone != BACKBONE_INKLING2) {
+        fc              = create_tensor(tn(LLM_TENSOR_FC,              "weight"), { n_embd_inp, n_embd }, 0);
+        fc_s            = create_tensor(tn(LLM_TENSOR_FC,              "scale"),  { 1 }, TENSOR_NOT_REQUIRED);
+        fc_in_s         = create_tensor(tn(LLM_TENSOR_FC,              "input_scale"), { 1 }, TENSOR_NOT_REQUIRED);
+        output_norm_enc = create_tensor(tn(LLM_TENSOR_ENC_OUTPUT_NORM, "weight"), { n_embd }, 0); // encoder hidden_norm (after fc)
+    }
     output_norm     = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM,    "weight"), { n_embd }, 0); // decoder final norm
 
     // optional: reduced-vocab drafts ship their own lm head, full-vocab drafts can share the target's via ctx_other
@@ -122,11 +127,12 @@ void llama_model_dflash::load_arch_tensors(llama_model_loader &) {
         case BACKBONE_DSV4:
         case BACKBONE_DSV41:          load_tensors_layers_dsv4();           break;
         case BACKBONE_MISTRAL_LARGE4: load_tensors_layers_mistral_large4(); break;
+        case BACKBONE_INKLING2:       load_tensors_layers_inkling2();       break;
     }
 }
 
 uint32_t llama_model_dflash::graph_nodes_per_tensor() const {
-    if (hparams.dsv4_hc_mult > 0) {
+    if (hparams.dsv4_hc_mult > 0 || backbone == BACKBONE_INKLING2) {
         return 32;
     }
     if (hparams.dflash_selector_rank > 0) {
@@ -540,6 +546,7 @@ std::unique_ptr<llm_graph_context> llama_model_dflash::build_arch_graph(const ll
                 case BACKBONE_DSV4:           return std::make_unique<graph_dsv4>(params);
                 case BACKBONE_DSV41:          return std::make_unique<graph_dsv41>(params);
                 case BACKBONE_MISTRAL_LARGE4: return std::make_unique<graph_mistral_large4>(params);
+                case BACKBONE_INKLING2:       return std::make_unique<graph_inkling2>(params);
             }
             switch (variant) {
                 case VARIANT_DFLASH:   return std::make_unique<graph_dflash>(params);

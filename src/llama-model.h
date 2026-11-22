@@ -424,6 +424,12 @@ struct llama_layer {
     struct ggml_tensor * dflash_ffn_conv_base  = nullptr;
     struct ggml_tensor * dflash_ffn_conv_proj  = nullptr;
 
+    // Inkling-2 DSpark context projections
+    struct ggml_tensor * wk_ctx          = nullptr;
+    struct ggml_tensor * wv_ctx          = nullptr;
+    struct ggml_tensor * attn_k_ctx_norm = nullptr;
+    struct ggml_tensor * dflare_norm     = nullptr;
+
     struct ggml_tensor * lilicorr_attn_norm       = nullptr;
     struct ggml_tensor * lilicorr_mlp_norm        = nullptr;
     struct ggml_tensor * lilicorr_attn_in_proj    = nullptr;
@@ -929,6 +935,10 @@ struct llama_model {
     struct ggml_tensor * dspark_joint_proj   = nullptr; // rnn markov head
     struct ggml_tensor * dspark_joint_proj_b = nullptr;
     struct ggml_tensor * dspark_mask_embd    = nullptr; // per-slot mask embeddings
+    struct ggml_tensor * dspark_fuse         = nullptr; // Inkling-2 tap fusion weights [n_taps, n_layer + 1]
+    struct ggml_tensor * dspark_hidden_out   = nullptr; // Inkling-2 hidden_out [rank, n_embd]
+    struct ggml_tensor * dspark_hidden_out_b = nullptr; // Inkling-2 hidden_out bias [n_embd]
+    struct ggml_tensor * dspark_norm         = nullptr; // Inkling-2 rnn feature norm [n_embd]
 
     // zaya1
     struct ggml_tensor * res_scale_in   = nullptr;

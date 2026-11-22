@@ -526,6 +526,23 @@ llama_context::llama_context(
                     ggml_backend_buffer_name    (buf_output.get()),
                     ggml_backend_buffer_get_size(buf_output.get()) / 1024.0 / 1024.0);
         }
+
+        // Inkling-2 DSpark per-sequence ring of RNN context features (F32 [n_embd, ring_sz * n_seq_max])
+        // Indexed by seq_id * ring_sz + (pos % ring_sz) so rollback on partial draft acceptance reads exact last-accepted f_rnn.
+        if (model.dspark_norm != nullptr) {
+            const uint32_t ring_sz = std::max<uint32_t>(1, hparams.dflash_block_size);
+            ggml_backend_dev_t dev_out = model.dev_output();
+            ggml_backend_buffer_type_t buft = dev_out ? ggml_backend_dev_buffer_type(dev_out) : ggml_backend_cpu_buffer_type();
+            ggml_init_params gparams = { ggml_tensor_overhead(), nullptr, true };
+            ctx_dspark_f_rnn_dev.reset(ggml_init(gparams));
+            dspark_f_rnn_dev = ggml_new_tensor_2d(ctx_dspark_f_rnn_dev.get(), GGML_TYPE_F32, hparams.n_embd, (int64_t) ring_sz * std::max<uint32_t>(1, cparams.n_seq_max));
+            ggml_set_name(dspark_f_rnn_dev, "dspark_f_rnn_dev");
+            buf_dspark_f_rnn_dev.reset(ggml_backend_alloc_ctx_tensors_from_buft(ctx_dspark_f_rnn_dev.get(), buft));
+            if (!buf_dspark_f_rnn_dev) {
+                throw std::runtime_error("failed to allocate dspark_f_rnn_dev buffer");
+            }
+            ggml_backend_tensor_memset(dspark_f_rnn_dev, 0, 0, ggml_nbytes(dspark_f_rnn_dev));
+        }
     }
 
     // init the memory module
@@ -3065,8 +3082,9 @@ llm_graph_params llama_context::graph_params(
         /*.moe_cache   =*/ moe_cache.get(),
         /*.layer_inp_dev =*/ layer_inp_dev,
         /*.layer_inp_src =*/ supports_embd_row() ? cparams.ctx_other->get_layer_inp_dev() : nullptr,
-        /*.h_nextn_dev   =*/ cparams.embeddings_nextn_dev ? h_nextn_dev : nullptr,
-        /*.h_nextn_src   =*/ supports_state_row() ? cparams.ctx_state_src->get_h_nextn_dev() : nullptr,
+        /*.h_nextn_dev      =*/ cparams.embeddings_nextn_dev ? h_nextn_dev : nullptr,
+        /*.h_nextn_src      =*/ supports_state_row() ? cparams.ctx_state_src->get_h_nextn_dev() : nullptr,
+        /*.dspark_f_rnn_dev =*/ dspark_f_rnn_dev,
         /*.samplers    =*/ sampling.samplers,
         /*.n_outputs   =*/ n_outputs,
         /*.cb          =*/ graph_get_cb(),

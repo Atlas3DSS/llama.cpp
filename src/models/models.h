@@ -1606,6 +1606,7 @@ struct llama_model_dflash : public llama_model_base {
         BACKBONE_DSV4,
         BACKBONE_DSV41,
         BACKBONE_MISTRAL_LARGE4,
+        BACKBONE_INKLING2,
     };
 
     variant_type  variant  = VARIANT_DFLASH;
@@ -1614,6 +1615,7 @@ struct llama_model_dflash : public llama_model_base {
     void load_hparams_lilicorr(llama_model_loader & ml);
     void load_hparams_dsv4(llama_model_loader & ml);
     void load_hparams_mistral_large4(llama_model_loader & ml);
+    void load_hparams_inkling2(llama_model_loader & ml);
     void load_tensors_dflash2();
     void load_tensors_dflash2_conv();
     void load_tensors_dspark(int64_t n_vocab_draft);
@@ -1621,6 +1623,7 @@ struct llama_model_dflash : public llama_model_base {
     void load_tensors_layers_base();
     void load_tensors_layers_dsv4();
     void load_tensors_layers_mistral_large4();
+    void load_tensors_layers_inkling2();
 
     template <bool is_enc>
     struct graph : public llm_graph_context {
@@ -1677,6 +1680,11 @@ struct llama_model_dflash : public llama_model_base {
     // Mistral Large 4 DSpark: dense MLA stages, non-causal, rnn markov head
     struct graph_mistral_large4 : public llm_graph_context {
         graph_mistral_large4(const llm_graph_params & params);
+    };
+
+    // Inkling-2 DSpark: per-layer tap fusion + ctx K/V, interleaved SWA/Full, rnn hidden_out markov head
+    struct graph_inkling2 : public llm_graph_context {
+        graph_inkling2(const llm_graph_params & params);
     };
 
     // graph helpers shared by the backbones

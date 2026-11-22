@@ -486,6 +486,11 @@ private:
     bool ev_h_nextn_written_recorded = false;
     bool ev_h_nextn_read_recorded    = false;
 
+    // Inkling-2 DSpark per-sequence RNN context feature cache, F32 [n_embd, n_seq_max]
+    ggml_context_ptr        ctx_dspark_f_rnn_dev;
+    ggml_backend_buffer_ptr buf_dspark_f_rnn_dev;
+    ggml_tensor *           dspark_f_rnn_dev = nullptr;
+
     // keep copies of the per-sequence memory on the device
     std::map<llama_seq_id, llama_memory_buffers> mem_storage;
 
