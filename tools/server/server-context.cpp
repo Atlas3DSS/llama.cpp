@@ -5352,6 +5352,107 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     meta->logit_bias_eog,
                     data);
 
+            // Opt-in automatic difficulty router for dynamic loop_passes gearing:
+            // Triggered per-request via "loop_passes": -1 or globally via ATLAS_LOOP_ROUTER=1 (when loop_passes == 0).
+            // Routed BEFORE slot launch so cross-gear KV isolation and mixed-gear batch separation hold automatically.
+            {
+                static const bool env_router = []() {
+                    const char * e = std::getenv("ATLAS_LOOP_ROUTER");
+                    return e && e[0] == '1';
+                }();
+                if (task.params.loop_passes == -1 || (task.params.loop_passes == 0 && env_router)) {
+                    auto env_int = [](const char * name, int def_val, int lo, int hi) -> int {
+                        const char * e = std::getenv(name);
+                        if (!e || !e[0]) {
+                            return def_val;
+                        }
+                        int v = std::atoi(e);
+                        return std::max(lo, std::min(hi, v));
+                    };
+                    const int min_p = env_int("ATLAS_LOOP_ROUTER_MIN_PASSES", 1, 1, 16);
+                    const int max_p = env_int("ATLAS_LOOP_ROUTER_MAX_PASSES", 3, min_p, 16);
+                    const int mid_p = std::max(min_p, std::min(max_p, (min_p + max_p) / 2));
+
+                    std::string text;
+                    if (data.contains("messages") && data["messages"].is_array()) {
+                        for (const auto & m : data["messages"]) {
+                            if (m.is_object() && m.contains("content") && m["content"].is_string()) {
+                                text += m["content"].get<std::string>();
+                                text.push_back('\n');
+                            }
+                        }
+                    } else if (data.contains("prompt") && data["prompt"].is_string()) {
+                        text = data["prompt"].get<std::string>();
+                    }
+                    std::string lower = text;
+                    for (char & c : lower) {
+                        c = (char) std::tolower((unsigned char) c);
+                    }
+
+                    auto has_any = [&](const std::vector<const char *> & keys) -> const char * {
+                        for (const char * k : keys) {
+                            if (lower.find(k) != std::string::npos) {
+                                return k;
+                            }
+                        }
+                        return nullptr;
+                    };
+
+                    const bool has_tools   = (data.contains("tools") && data["tools"].is_array() && !data["tools"].empty());
+                    const bool has_schema  = data.contains("response_format") || !task.params.sampling.grammar.empty();
+                    const size_t n_tok     = task.tokens.size();
+                    const char * hard_kw   = has_any({
+                        "```", "select ", " join ", " where ", "sqlite", "sql ", "def ", "class ",
+                        "function ", "struct ", "template<", "traceback", "debug", "error:",
+                        "prove ", "derive ", "equation", "integral", "calculate", "step by step",
+                        "algorithm", "regex", "cuda", "kernel", "optimize"
+                    });
+                    const char * med_kw    = has_any({
+                        "explain", "summarize", "compare", "contrast", "design", "outline",
+                        "write a", "analyze", "why ", "how does"
+                    });
+                    int q_marks = 0;
+                    for (char c : lower) {
+                        if (c == '?') {
+                            q_marks++;
+                        }
+                    }
+
+                    int chosen = min_p;
+                    std::string reason = "easy:short_direct";
+                    if (n_tok > 2048) {
+                        chosen = max_p;
+                        reason = "hard:long_context";
+                    } else if (has_tools) {
+                        chosen = max_p;
+                        reason = "hard:tools";
+                    } else if (has_schema) {
+                        chosen = max_p;
+                        reason = "hard:structured_schema";
+                    } else if (hard_kw != nullptr) {
+                        chosen = max_p;
+                        reason = std::string("hard:kw:") + hard_kw;
+                    } else if (n_tok > 192) {
+                        chosen = mid_p;
+                        reason = "medium:prompt_len";
+                    } else if (task.params.n_predict > 512) {
+                        chosen = mid_p;
+                        reason = "medium:long_output";
+                    } else if (med_kw != nullptr) {
+                        chosen = mid_p;
+                        reason = std::string("medium:kw:") + med_kw;
+                    } else if (q_marks >= 2) {
+                        chosen = mid_p;
+                        reason = "medium:multi_question";
+                    }
+
+                    task.params.loop_passes        = chosen;
+                    task.params.loop_router_reason = reason;
+                    SRV_INF("loop_router: task=%d n_tokens=%zu -> loop_passes=%d (%s)\n",
+                            task.id, n_tok, chosen, reason.c_str());
+                }
+            }
+
             task.apply_chat_session(chat_session);
 
             task.id_slot = json_value(data, "id_slot", -1);

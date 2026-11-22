@@ -68,6 +68,7 @@ json task_params::to_json(bool only_metrics) const {
             {"max_tokens",                n_predict},
             {"n_predict",                 n_predict}, // TODO: deduplicate?
             {"loop_passes",               loop_passes},
+            {"loop_router_reason",        loop_router_reason},
             {"n_keep",                    n_keep},
             {"n_discard",                 n_discard},
             {"ignore_eos",                sampling.ignore_eos},
@@ -123,6 +124,7 @@ json task_params::to_json(bool only_metrics) const {
         {"max_tokens",                n_predict},
         {"n_predict",                 n_predict}, // TODO: deduplicate?
         {"loop_passes",               loop_passes},
+        {"loop_router_reason",        loop_router_reason},
         {"n_keep",                    n_keep},
         {"n_discard",                 n_discard},
         {"ignore_eos",                sampling.ignore_eos},
@@ -401,6 +403,12 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
     if (stats.is_set()) {
         res["timings"] = stats.to_json();
     }
+    if (generation_params.loop_passes > 0 || !generation_params.loop_router_reason.empty()) {
+        res["loop_passes"] = generation_params.loop_passes;
+        if (!generation_params.loop_router_reason.empty()) {
+            res["loop_router_reason"] = generation_params.loop_router_reason;
+        }
+    }
 
     return res;
 }
@@ -448,6 +456,12 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
     }
     if (stats.is_set()) {
         res["timings"] = stats.to_json();
+    }
+    if (generation_params.loop_passes > 0 || !generation_params.loop_router_reason.empty()) {
+        res["loop_passes"] = generation_params.loop_passes;
+        if (!generation_params.loop_router_reason.empty()) {
+            res["loop_router_reason"] = generation_params.loop_router_reason;
+        }
     }
 
     return res;
